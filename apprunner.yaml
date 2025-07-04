@@ -1,0 +1,23 @@
+version: 1.0
+runtime: docker
+build:
+  commands:
+    build:
+      - echo "Building TaxBox API..."
+run:
+  runtime-version: latest
+  command: uvicorn main:app --host 0.0.0.0 --port 8000
+  network:
+    port: 8000
+    env: PORT
+  env:
+    - name: DATABASE_URL
+      value: "postgresql://taxboxuser:YourPassword@taxbox-db.c1w6wm6ceveo.us-east-2.rds.amazonaws.com:5432/taxboxdb"
+    - name: SECRET_KEY
+      value: "TaxBox2025SuperSecretProductionKey32Chars"
+    - name: ALGORITHM
+      value: "HS256"
+    - name: ACCESS_TOKEN_EXPIRE_MINUTES
+      value: "30"
+    - name: ALLOWED_ORIGINS
+      value: "http://localhost:3000"
