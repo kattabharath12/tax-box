@@ -4,15 +4,14 @@ build:
   commands:
     build:
       - echo "Building TaxBox API..."
+      - docker build -t taxbox-api .
 run:
-  runtime-version: latest
   command: uvicorn main:app --host 0.0.0.0 --port 8000
   network:
     port: 8000
-    env: PORT
   env:
     - name: DATABASE_URL
-      value: "postgresql://taxboxuser:bharth1234@taxbox-db.c1w6wm6ceveo.us-east-2.rds.amazonaws.com:5432/taxboxdb"
+      value: "postgresql://taxboxuser:YourPassword@taxbox-db.c1w6wm6ceveo.us-east-2.rds.amazonaws.com:5432/taxboxdb"
     - name: SECRET_KEY
       value: "TaxBox2025SuperSecretProductionKey32Chars"
     - name: ALGORITHM
