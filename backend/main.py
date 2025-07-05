@@ -3,6 +3,14 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+# Auto-run migration if needed
+if os.getenv("RUN_MIGRATION") == "true":
+    try:
+        from migrate_production import run_migration
+        run_migration()
+        print("✅ Migration completed on startup")
+    except Exception as e:
+        print(f"❌ Migration failed: {e}")
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
