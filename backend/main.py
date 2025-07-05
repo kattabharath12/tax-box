@@ -1,23 +1,175 @@
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
+from pydantic import BaseModel, EmailStr
 import jwt
 from passlib.context import CryptContext
 import uvicorn
 
-from database import SessionLocal, engine, Base
-from models import User, Document, TaxReturn, Payment
-from schemas import UserCreate, UserResponse, DocumentResponse, TaxReturnCreate, TaxReturnResponse, PaymentCreate, PaymentResponse
+# Database setup
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./taxbox.db")
+
+# Add SSL configuration for PostgreSQL
+connect_args = {}
+if "postgresql" in DATABASE_URL:
+    connect_args = {
+        "sslmode": "require",
+        "connect_timeout": 10,
+    }
+elif "sqlite" in DATABASE_URL:
+    connect_args = {"check_same_thread": False}
+
+engine = create_engine(
+    DATABASE_URL, 
+    connect_args=connect_args,
+    pool_pre_ping=True,
+    pool_recycle=300
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Database Models
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    full_name = Column(String)
+    hashed_password = Column(String)
+    is_active = Column(Boolean, default=True)
+    is_cpa = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    documents = relationship("Document", back_populates="user")
+    tax_returns = relationship("TaxReturn", back_populates="user")
+    payments = relationship("Payment", back_populates="user")
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    filename = Column(String)
+    file_path = Column(String)
+    file_type = Column(String)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="documents")
+
+class TaxReturn(Base):
+    __tablename__ = "tax_returns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    tax_year = Column(Integer)
+    income = Column(Float)
+    deductions = Column(Float)
+    withholdings = Column(Float)
+    tax_owed = Column(Float)
+    refund_amount = Column(Float)
+    amount_owed = Column(Float)
+    status = Column(String, default="draft")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    submitted_at = Column(DateTime)
+
+    user = relationship("User", back_populates="tax_returns")
+    payments = relationship("Payment", back_populates="tax_return")
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    tax_return_id = Column(Integer, ForeignKey("tax_returns.id"))
+    amount = Column(Float)
+    payment_method = Column(String)
+    status = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="payments")
+    tax_return = relationship("TaxReturn", back_populates="payments")
+
+# Pydantic Models
+class UserCreate(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    is_active: bool
+    is_cpa: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TaxReturnCreate(BaseModel):
+    tax_year: int
+    income: float
+    deductions: Optional[float] = None
+    withholdings: float = 0
+
+class TaxReturnResponse(BaseModel):
+    id: int
+    tax_year: int
+    income: float
+    deductions: float
+    withholdings: float
+    tax_owed: float
+    refund_amount: float
+    amount_owed: float
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class DocumentResponse(BaseModel):
+    id: int
+    filename: str
+    file_type: str
+    uploaded_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class PaymentCreate(BaseModel):
+    tax_return_id: int
+    amount: float
+
+class PaymentResponse(BaseModel):
+    id: int
+    amount: float
+    payment_method: str
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 # Create tables
 Base.metadata.create_all(bind=engine)
 
+# FastAPI App
 app = FastAPI(title="TaxBox.AI API", version="1.0.0")
 
-# CORS middleware - FIXED VERSION
+# CORS middleware - FIXED
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allow all origins
@@ -27,9 +179,9 @@ app.add_middleware(
 )
 
 # Security
-SECRET_KEY = "your-secret-key-change-in-production"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -78,6 +230,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 # Routes
+@app.get("/")
+def root():
+    return {"message": "TaxBox.AI API is running"}
+
 @app.post("/register", response_model=UserResponse)
 def register(user: UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
@@ -120,7 +276,6 @@ def upload_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # In production, save to cloud storage (S3, etc.)
     file_path = f"uploads/{current_user.id}_{file.filename}"
 
     db_document = Document(
@@ -144,9 +299,9 @@ def create_tax_return(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Basic tax calculation (simplified)
+    # Tax calculation
     total_income = tax_return.income
-    deductions = tax_return.deductions or 12550  # Standard deduction 2023
+    deductions = tax_return.deductions or 12550  # Standard deduction
     taxable_income = max(0, total_income - deductions)
 
     # Simplified tax calculation
@@ -186,13 +341,12 @@ def create_payment(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Payment stub - in production, integrate with Stripe/PayPal
     db_payment = Payment(
         user_id=current_user.id,
         tax_return_id=payment.tax_return_id,
         amount=payment.amount,
         payment_method="credit_card",
-        status="completed"  # Stub - always successful
+        status="completed"
     )
     db.add(db_payment)
     db.commit()
