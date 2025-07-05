@@ -7,8 +7,9 @@ load_dotenv()
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ from pydantic import BaseModel, EmailStr
 import jwt
 from passlib.context import CryptContext
 import uvicorn
+import shutil
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./taxbox.db")
@@ -66,8 +68,30 @@ class Document(Base):
     file_path = Column(String)
     file_type = Column(String)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Document processing fields
+    processing_status = Column(String, default="pending")
+    document_type = Column(String)
+    extracted_data = Column(JSON)
+    processing_error = Column(Text)
+    processed_at = Column(DateTime)
 
     user = relationship("User", back_populates="documents")
+    document_suggestions = relationship("DocumentSuggestion", back_populates="document")
+
+class DocumentSuggestion(Base):
+    __tablename__ = "document_suggestions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id"))
+    field_name = Column(String)
+    suggested_value = Column(Float)
+    description = Column(String)
+    confidence = Column(Float)
+    is_accepted = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    document = relationship("Document", back_populates="document_suggestions")
 
 class TaxReturn(Base):
     __tablename__ = "tax_returns"
@@ -145,6 +169,9 @@ class DocumentResponse(BaseModel):
     filename: str
     file_type: str
     uploaded_at: datetime
+    processing_status: Optional[str] = None
+    document_type: Optional[str] = None
+    processed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -169,10 +196,10 @@ Base.metadata.create_all(bind=engine)
 # FastAPI App
 app = FastAPI(title="TaxBox.AI API", version="1.0.0")
 
-# CORS middleware - FIXED
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -185,6 +212,13 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Initialize document processor (if available)
+try:
+    from document_processor import DocumentProcessor
+    doc_processor = DocumentProcessor()
+except ImportError:
+    doc_processor = None
 
 # Database dependency
 def get_db():
@@ -271,22 +305,86 @@ def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @app.post("/documents/upload", response_model=DocumentResponse)
-def upload_document(
+async def upload_document(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    file_path = f"uploads/{current_user.id}_{file.filename}"
-
+    """Enhanced document upload with processing"""
+    
+    # Create uploads directory if it doesn't exist
+    uploads_dir = "uploads"
+    os.makedirs(uploads_dir, exist_ok=True)
+    
+    # Generate unique filename
+    file_extension = file.filename.split(".")[-1] if "." in file.filename else "unknown"
+    unique_filename = f"{current_user.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+    file_path = os.path.join(uploads_dir, unique_filename)
+    
+    # Save file
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    # Create document record
     db_document = Document(
         user_id=current_user.id,
         filename=file.filename,
         file_path=file_path,
-        file_type=file.content_type
+        file_type=file_extension,
+        processing_status="pending"
     )
     db.add(db_document)
     db.commit()
     db.refresh(db_document)
+    
+    # Process document if processor is available
+    if doc_processor:
+        try:
+            # Update status to processing
+            db_document.processing_status = "processing"
+            db.commit()
+            
+            # Process the document
+            result = doc_processor.process_document(file_path, file_extension)
+            
+            if result.get("success"):
+                # Update document with extracted data
+                db_document.processing_status = "completed"
+                db_document.document_type = result.get("document_type")
+                db_document.extracted_data = result.get("extracted_data")
+                db_document.processed_at = datetime.utcnow()
+                
+                # Create suggestions
+                suggestions = doc_processor.suggest_tax_entries(result.get("extracted_data", {}))
+                for suggestion in suggestions:
+                    db_suggestion = DocumentSuggestion(
+                        document_id=db_document.id,
+                        field_name=suggestion["field"],
+                        suggested_value=suggestion.get("suggested_value"),
+                        description=suggestion["description"],
+                        confidence=suggestion["confidence"]
+                    )
+                    db.add(db_suggestion)
+                    
+            else:
+                db_document.processing_status = "failed"
+                db_document.processing_error = result.get("error")
+                
+            db.commit()
+            
+        except Exception as e:
+            db_document.processing_status = "failed"
+            db_document.processing_error = str(e)
+            db.commit()
+    else:
+        # No processor available, mark as completed
+        db_document.processing_status = "completed"
+        db_document.document_type = "unknown"
+        db.commit()
+    
     return db_document
 
 @app.get("/documents")
@@ -334,6 +432,74 @@ def create_tax_return(
 @app.get("/tax-returns")
 def get_tax_returns(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(TaxReturn).filter(TaxReturn.user_id == current_user.id).all()
+
+@app.get("/tax-returns/{tax_return_id}/export/json")
+def export_tax_return_json(
+    tax_return_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Export tax return as JSON file"""
+    
+    # Get the tax return
+    tax_return = db.query(TaxReturn).filter(
+        TaxReturn.id == tax_return_id,
+        TaxReturn.user_id == current_user.id
+    ).first()
+    
+    if not tax_return:
+        raise HTTPException(status_code=404, detail="Tax return not found")
+    
+    # Create comprehensive JSON data
+    export_data = {
+        "tax_summary": {
+            "generated_at": datetime.now().isoformat(),
+            "tax_year": tax_return.tax_year,
+            "status": tax_return.status,
+            "created_at": tax_return.created_at.isoformat(),
+            "submitted_at": tax_return.submitted_at.isoformat() if tax_return.submitted_at else None
+        },
+        "taxpayer_info": {
+            "name": current_user.full_name,
+            "email": current_user.email,
+            "filing_status": "Single"
+        },
+        "income_information": {
+            "total_income": tax_return.income,
+            "income_sources": [
+                {
+                    "source": "W-2 Wages",
+                    "amount": tax_return.income
+                }
+            ]
+        },
+        "deductions": {
+            "total_deductions": tax_return.deductions,
+            "deduction_type": "Standard" if tax_return.deductions <= 12550 else "Itemized",
+            "standard_deduction": 12550,
+            "itemized_deductions": max(0, tax_return.deductions - 12550)
+        },
+        "tax_calculation": {
+            "taxable_income": max(0, tax_return.income - tax_return.deductions),
+            "tax_owed": tax_return.tax_owed,
+            "withholdings": tax_return.withholdings,
+            "refund_amount": tax_return.refund_amount,
+            "amount_owed": tax_return.amount_owed
+        },
+        "payment_info": {
+            "refund_due": tax_return.refund_amount > 0,
+            "payment_required": tax_return.amount_owed > 0,
+            "net_amount": tax_return.refund_amount - tax_return.amount_owed
+        }
+    }
+    
+    # Create response with JSON file
+    return JSONResponse(
+        content=export_data,
+        headers={
+            "Content-Disposition": f"attachment; filename=tax_return_{tax_return.tax_year}_{current_user.id}.json"
+        }
+    )
 
 @app.post("/payments", response_model=PaymentResponse)
 def create_payment(
