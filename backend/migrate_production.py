@@ -39,14 +39,15 @@ def run_migration():
     
     try:
         with engine.connect() as conn:
-            for sql in migration_sql:
-                try:
-                    print(f"Executing: {sql[:50]}...")
-                    conn.execute(text(sql))
-                    conn.commit()
-                except Exception as e:
-                    print(f"Note: {e}")
-                    
+            # Use transaction
+            with conn.begin():
+                for sql in migration_sql:
+                    try:
+                        print(f"Executing: {sql[:50]}...")
+                        conn.execute(text(sql))
+                    except Exception as e:
+                        print(f"Note: {e}")
+                        
             print("✅ Migration completed!")
             
     except SQLAlchemyError as e:
