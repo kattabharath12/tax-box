@@ -527,5 +527,42 @@ def create_payment(
     db.refresh(db_payment)
     return db_payment
 
+@app.get("/debug/document/{document_id}")
+def debug_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Debug endpoint to see document processing details"""
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.user_id == current_user.id
+    ).first()
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Try processing again for debugging
+    debug_result = None
+    if doc_processor and document.file_path:
+        try:
+            debug_result = doc_processor.process_document(document.file_path, document.file_type)
+        except Exception as e:
+            debug_result = {"error": str(e)}
+    
+    return {
+        "id": document.id,
+        "filename": document.filename,
+        "file_type": document.file_type,
+        "processing_status": document.processing_status,
+        "document_type": document.document_type,
+        "extracted_data": document.extracted_data,
+        "processing_error": document.processing_error,
+        "has_processor": doc_processor is not None,
+        "debug_reprocess": debug_result
+    }
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
