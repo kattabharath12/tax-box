@@ -27,6 +27,7 @@ import jwt
 from passlib.context import CryptContext
 import uvicorn
 import shutil
+from enum import Enum
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./taxbox.db")
@@ -50,6 +51,14 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# Enums for Filing Status
+class FilingStatus(str, Enum):
+    SINGLE = "single"
+    MARRIED_JOINTLY = "married_jointly"
+    MARRIED_SEPARATELY = "married_separately"
+    HEAD_OF_HOUSEHOLD = "head_of_household"
+    QUALIFYING_WIDOW = "qualifying_widow"
 
 # Database Models
 class User(Base):
@@ -107,6 +116,18 @@ class TaxReturn(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     tax_year = Column(Integer)
+    
+    # Filing Status Information
+    filing_status = Column(String, default="single")
+    spouse_name = Column(String)
+    spouse_ssn = Column(String)
+    spouse_has_income = Column(Boolean, default=False)
+    spouse_itemizes = Column(Boolean, default=False)
+    qualifying_person_name = Column(String)
+    qualifying_person_relationship = Column(String)
+    lived_with_taxpayer = Column(Boolean, default=False)
+    
+    # Tax Calculation Fields
     income = Column(Float)
     deductions = Column(Float)
     withholdings = Column(Float)
@@ -151,11 +172,22 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class FilingStatusInfo(BaseModel):
+    filing_status: FilingStatus
+    spouse_name: Optional[str] = None
+    spouse_ssn: Optional[str] = None
+    spouse_has_income: Optional[bool] = False
+    spouse_itemizes: Optional[bool] = False
+    qualifying_person_name: Optional[str] = None
+    qualifying_person_relationship: Optional[str] = None
+    lived_with_taxpayer: Optional[bool] = False
+
 class TaxReturnCreate(BaseModel):
     tax_year: int
     income: float
     deductions: Optional[float] = None
     withholdings: float = 0
+    filing_status_info: Optional[FilingStatusInfo] = None
 
 class TaxReturnResponse(BaseModel):
     id: int
@@ -168,6 +200,16 @@ class TaxReturnResponse(BaseModel):
     amount_owed: float
     status: str
     created_at: datetime
+    
+    # Filing Status fields
+    filing_status: str
+    spouse_name: Optional[str] = None
+    spouse_ssn: Optional[str] = None
+    spouse_has_income: Optional[bool] = None
+    spouse_itemizes: Optional[bool] = None
+    qualifying_person_name: Optional[str] = None
+    qualifying_person_relationship: Optional[str] = None
+    lived_with_taxpayer: Optional[bool] = None
 
     class Config:
         from_attributes = True
@@ -270,6 +312,63 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
+# Tax calculation functions
+def get_standard_deduction(filing_status: str, tax_year: int = 2024):
+    """Get standard deduction based on filing status"""
+    standard_deductions = {
+        "single": 14600,
+        "married_jointly": 29200,
+        "married_separately": 14600,
+        "head_of_household": 21900,
+        "qualifying_widow": 29200
+    }
+    return standard_deductions.get(filing_status, 14600)
+
+def calculate_tax_owed(taxable_income: float, filing_status: str):
+    """Calculate tax owed based on taxable income and filing status"""
+    
+    # Tax brackets for 2024 (simplified)
+    if filing_status in ["single", "married_separately"]:
+        # Single filer brackets
+        if taxable_income <= 11000:
+            return taxable_income * 0.10
+        elif taxable_income <= 44725:
+            return 1100 + (taxable_income - 11000) * 0.12
+        elif taxable_income <= 95375:
+            return 5147 + (taxable_income - 44725) * 0.22
+        elif taxable_income <= 182050:
+            return 16290 + (taxable_income - 95375) * 0.24
+        else:
+            return 37104 + (taxable_income - 182050) * 0.32
+    
+    elif filing_status in ["married_jointly", "qualifying_widow"]:
+        # Married filing jointly brackets
+        if taxable_income <= 22000:
+            return taxable_income * 0.10
+        elif taxable_income <= 89450:
+            return 2200 + (taxable_income - 22000) * 0.12
+        elif taxable_income <= 190750:
+            return 10294 + (taxable_income - 89450) * 0.22
+        elif taxable_income <= 364200:
+            return 32580 + (taxable_income - 190750) * 0.24
+        else:
+            return 74208 + (taxable_income - 364200) * 0.32
+    
+    elif filing_status == "head_of_household":
+        # Head of household brackets
+        if taxable_income <= 15700:
+            return taxable_income * 0.10
+        elif taxable_income <= 59850:
+            return 1570 + (taxable_income - 15700) * 0.12
+        elif taxable_income <= 95350:
+            return 6868 + (taxable_income - 59850) * 0.22
+        elif taxable_income <= 182050:
+            return 14678 + (taxable_income - 95350) * 0.24
+        else:
+            return 35486 + (taxable_income - 182050) * 0.32
+    
+    return 0
 
 # Routes
 @app.get("/")
@@ -405,22 +504,37 @@ def create_tax_return(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Tax calculation
+    # Get filing status info
+    filing_info = tax_return.filing_status_info
+    filing_status = filing_info.filing_status if filing_info else FilingStatus.SINGLE
+    
+    # Validate filing status requirements
+    if filing_status in [FilingStatus.MARRIED_JOINTLY, FilingStatus.MARRIED_SEPARATELY]:
+        if not filing_info or not filing_info.spouse_name or not filing_info.spouse_ssn:
+            raise HTTPException(
+                status_code=400, 
+                detail="Spouse name and SSN are required for married filing status"
+            )
+    
+    if filing_status == FilingStatus.HEAD_OF_HOUSEHOLD:
+        if not filing_info or not filing_info.qualifying_person_name:
+            raise HTTPException(
+                status_code=400, 
+                detail="Qualifying person information is required for head of household"
+            )
+    
+    # Tax calculation with filing status
     total_income = tax_return.income
-    deductions = tax_return.deductions or 12550  # Standard deduction
+    deductions = tax_return.deductions or get_standard_deduction(filing_status, tax_return.tax_year)
     taxable_income = max(0, total_income - deductions)
-
-    # Simplified tax calculation
-    if taxable_income <= 10275:
-        tax_owed = taxable_income * 0.10
-    elif taxable_income <= 41775:
-        tax_owed = 1027.50 + (taxable_income - 10275) * 0.12
-    else:
-        tax_owed = 4807.50 + (taxable_income - 41775) * 0.22
-
+    
+    # Calculate tax owed based on filing status
+    tax_owed = calculate_tax_owed(taxable_income, filing_status)
+    
     refund_amount = max(0, tax_return.withholdings - tax_owed)
     amount_owed = max(0, tax_owed - tax_return.withholdings)
 
+    # Create tax return with filing status info
     db_tax_return = TaxReturn(
         user_id=current_user.id,
         tax_year=tax_return.tax_year,
@@ -430,8 +544,19 @@ def create_tax_return(
         tax_owed=tax_owed,
         refund_amount=refund_amount,
         amount_owed=amount_owed,
-        status="draft"
+        status="draft",
+        
+        # Filing status fields
+        filing_status=filing_status,
+        spouse_name=filing_info.spouse_name if filing_info else None,
+        spouse_ssn=filing_info.spouse_ssn if filing_info else None,
+        spouse_has_income=filing_info.spouse_has_income if filing_info else False,
+        spouse_itemizes=filing_info.spouse_itemizes if filing_info else False,
+        qualifying_person_name=filing_info.qualifying_person_name if filing_info else None,
+        qualifying_person_relationship=filing_info.qualifying_person_relationship if filing_info else None,
+        lived_with_taxpayer=filing_info.lived_with_taxpayer if filing_info else False
     )
+    
     db.add(db_tax_return)
     db.commit()
     db.refresh(db_tax_return)
@@ -440,6 +565,64 @@ def create_tax_return(
 @app.get("/tax-returns")
 def get_tax_returns(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(TaxReturn).filter(TaxReturn.user_id == current_user.id).all()
+
+@app.put("/tax-returns/{tax_return_id}/filing-status")
+def update_filing_status(
+    tax_return_id: int,
+    filing_info: FilingStatusInfo,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update filing status for an existing tax return"""
+    
+    # Get the tax return
+    tax_return = db.query(TaxReturn).filter(
+        TaxReturn.id == tax_return_id,
+        TaxReturn.user_id == current_user.id
+    ).first()
+    
+    if not tax_return:
+        raise HTTPException(status_code=404, detail="Tax return not found")
+    
+    # Validate filing status requirements
+    if filing_info.filing_status in [FilingStatus.MARRIED_JOINTLY, FilingStatus.MARRIED_SEPARATELY]:
+        if not filing_info.spouse_name or not filing_info.spouse_ssn:
+            raise HTTPException(
+                status_code=400, 
+                detail="Spouse name and SSN are required for married filing status"
+            )
+    
+    if filing_info.filing_status == FilingStatus.HEAD_OF_HOUSEHOLD:
+        if not filing_info.qualifying_person_name:
+            raise HTTPException(
+                status_code=400, 
+                detail="Qualifying person information is required for head of household"
+            )
+    
+    # Update filing status fields
+    tax_return.filing_status = filing_info.filing_status
+    tax_return.spouse_name = filing_info.spouse_name
+    tax_return.spouse_ssn = filing_info.spouse_ssn
+    tax_return.spouse_has_income = filing_info.spouse_has_income
+    tax_return.spouse_itemizes = filing_info.spouse_itemizes
+    tax_return.qualifying_person_name = filing_info.qualifying_person_name
+    tax_return.qualifying_person_relationship = filing_info.qualifying_person_relationship
+    tax_return.lived_with_taxpayer = filing_info.lived_with_taxpayer
+    
+    # Recalculate tax with new filing status
+    deductions = tax_return.deductions or get_standard_deduction(filing_info.filing_status, tax_return.tax_year)
+    taxable_income = max(0, tax_return.income - deductions)
+    tax_owed = calculate_tax_owed(taxable_income, filing_info.filing_status)
+    
+    tax_return.deductions = deductions
+    tax_return.tax_owed = tax_owed
+    tax_return.refund_amount = max(0, tax_return.withholdings - tax_owed)
+    tax_return.amount_owed = max(0, tax_owed - tax_return.withholdings)
+    
+    db.commit()
+    db.refresh(tax_return)
+    
+    return tax_return
 
 @app.get("/tax-returns/{tax_return_id}/export/json")
 def export_tax_return_json(
@@ -470,7 +653,17 @@ def export_tax_return_json(
         "taxpayer_info": {
             "name": current_user.full_name,
             "email": current_user.email,
-            "filing_status": "Single"
+            "filing_status": tax_return.filing_status
+        },
+        "filing_status_details": {
+            "filing_status": tax_return.filing_status,
+            "spouse_name": tax_return.spouse_name,
+            "spouse_ssn": tax_return.spouse_ssn,
+            "spouse_has_income": tax_return.spouse_has_income,
+            "spouse_itemizes": tax_return.spouse_itemizes,
+            "qualifying_person_name": tax_return.qualifying_person_name,
+            "qualifying_person_relationship": tax_return.qualifying_person_relationship,
+            "lived_with_taxpayer": tax_return.lived_with_taxpayer
         },
         "income_information": {
             "total_income": tax_return.income,
@@ -483,9 +676,9 @@ def export_tax_return_json(
         },
         "deductions": {
             "total_deductions": tax_return.deductions,
-            "deduction_type": "Standard" if tax_return.deductions <= 12550 else "Itemized",
-            "standard_deduction": 12550,
-            "itemized_deductions": max(0, tax_return.deductions - 12550)
+            "deduction_type": "Standard" if tax_return.deductions <= get_standard_deduction(tax_return.filing_status, tax_return.tax_year) else "Itemized",
+            "standard_deduction": get_standard_deduction(tax_return.filing_status, tax_return.tax_year),
+            "itemized_deductions": max(0, tax_return.deductions - get_standard_deduction(tax_return.filing_status, tax_return.tax_year))
         },
         "tax_calculation": {
             "taxable_income": max(0, tax_return.income - tax_return.deductions),
@@ -562,7 +755,52 @@ def debug_document(
         "debug_reprocess": debug_result
     }
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/filing-status/standard-deductions")
+def get_standard_deductions(tax_year: int = 2024):
+    """Get standard deduction amounts for all filing statuses"""
+    return {
+        "tax_year": tax_year,
+        "standard_deductions": {
+            "single": get_standard_deduction("single", tax_year),
+            "married_jointly": get_standard_deduction("married_jointly", tax_year),
+            "married_separately": get_standard_deduction("married_separately", tax_year),
+            "head_of_household": get_standard_deduction("head_of_household", tax_year),
+            "qualifying_widow": get_standard_deduction("qualifying_widow", tax_year)
+        }
+    }
+
+@app.get("/filing-status/options")
+def get_filing_status_options():
+    """Get available filing status options with descriptions"""
+    return {
+        "filing_statuses": [
+            {
+                "value": "single",
+                "label": "Single",
+                "description": "Check if you are unmarried or legally separated under a divorce or separate maintenance decree"
+            },
+            {
+                "value": "married_jointly",
+                "label": "Married Filing Jointly",
+                "description": "Check if you are married and you and your spouse agree to file a joint return"
+            },
+            {
+                "value": "married_separately",
+                "label": "Married Filing Separately",
+                "description": "Check if you are married but choose to file separate returns"
+            },
+            {
+                "value": "head_of_household",
+                "label": "Head of Household",
+                "description": "Check if you are unmarried and paid more than half the cost of keeping up a home for a qualifying person"
+            },
+            {
+                "value": "qualifying_widow",
+                "label": "Qualifying Widow(er)",
+                "description": "Check if your spouse died in a prior tax year and you have a qualifying child"
+            }
+        ]
+    }
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
