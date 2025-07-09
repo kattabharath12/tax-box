@@ -29,8 +29,9 @@ import uvicorn
 import shutil
 from enum import Enum
 
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -41,6 +42,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+@app.get("/")
+async def root():
+    return {"message": "TaxBox API is running"}
 
 # Your existing routes go here...
 # Database setup
