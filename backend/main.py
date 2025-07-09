@@ -29,6 +29,24 @@ import uvicorn
 import shutil
 from enum import Enum
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://tax-bo-production.up.railway.app",  # Your frontend URL
+        "http://localhost:3000",  # For local development
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
+
+# Your existing routes go here...
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./taxbox.db")
 
