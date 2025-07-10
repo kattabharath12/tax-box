@@ -807,4 +807,64 @@ def debug_document(
         except Exception as e:
             debug_result = {"error": str(e)}
     
+     return {
+        "id": document.id,
+        "filename": document.filename,
+        "file_type": document.file_type,
+        "processing_status": document.processing_status,
+        "document_type": document.document_type,
+        "extracted_data": document.extracted_data,
+        "processing_error": document.processing_error,
+        "has_processor": doc_processor is not None,
+        "debug_reprocess": debug_result
+    }
+
+@app.get("/filing-status/standard-deductions")
+def get_standard_deductions(tax_year: int = 2024):
+    """Get standard deduction amounts for all filing statuses"""
     return {
+        "tax_year": tax_year,
+        "standard_deductions": {
+            "single": get_standard_deduction("single", tax_year),
+            "married_jointly": get_standard_deduction("married_jointly", tax_year),
+            "married_separately": get_standard_deduction("married_separately", tax_year),
+            "head_of_household": get_standard_deduction("head_of_household", tax_year),
+            "qualifying_widow": get_standard_deduction("qualifying_widow", tax_year)
+        }
+    }
+
+@app.get("/filing-status/options")
+def get_filing_status_options():
+    """Get available filing status options with descriptions"""
+    return {
+        "filing_statuses": [
+            {
+                "value": "single",
+                "label": "Single",
+                "description": "Check if you are unmarried or legally separated under a divorce or separate maintenance decree"
+            },
+            {
+                "value": "married_jointly",
+                "label": "Married Filing Jointly",
+                "description": "Check if you are married and you and your spouse agree to file a joint return"
+            },
+            {
+                "value": "married_separately",
+                "label": "Married Filing Separately",
+                "description": "Check if you are married but choose to file separate returns"
+            },
+            {
+                "value": "head_of_household",
+                "label": "Head of Household",
+                "description": "Check if you are unmarried and paid more than half the cost of keeping up a home for a qualifying person"
+            },
+            {
+                "value": "qualifying_widow",
+                "label": "Qualifying Widow(er)",
+                "description": "Check if your spouse died in a prior tax year and you have a qualifying child"
+            }
+        ]
+    }
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
