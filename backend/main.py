@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text, JSON
-from sqlalchemy.orm import declarative_base  # FIXED: Updated import
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, timedelta
 from typing import Optional, List
@@ -244,16 +244,16 @@ class PaymentResponse(BaseModel):
 # Create tables
 Base.metadata.create_all(bind=engine)
 
-# FIXED: Single FastAPI App Declaration
+# FastAPI App
 app = FastAPI(title="TaxBox.AI API", version="1.0.0")
 
-# FIXED: Single CORS middleware configuration
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://tax-bo-production.up.railway.app",  # Your frontend domain
-        "http://localhost:3000",  # For local development
-        "*"  # Allow all origins for testing - restrict in production
+        "https://tax-bo-production.up.railway.app",
+        "http://localhost:3000",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -333,9 +333,8 @@ def get_standard_deduction(filing_status: str, tax_year: int = 2024):
 def calculate_tax_owed(taxable_income: float, filing_status: str):
     """Calculate tax owed based on taxable income and filing status"""
     
-    # Tax brackets for 2024 (simplified)
+    # Tax brackets for 2024
     if filing_status in ["single", "married_separately"]:
-        # Single filer brackets
         if taxable_income <= 11000:
             return taxable_income * 0.10
         elif taxable_income <= 44725:
@@ -348,7 +347,6 @@ def calculate_tax_owed(taxable_income: float, filing_status: str):
             return 37104 + (taxable_income - 182050) * 0.32
     
     elif filing_status in ["married_jointly", "qualifying_widow"]:
-        # Married filing jointly brackets
         if taxable_income <= 22000:
             return taxable_income * 0.10
         elif taxable_income <= 89450:
@@ -361,7 +359,6 @@ def calculate_tax_owed(taxable_income: float, filing_status: str):
             return 74208 + (taxable_income - 364200) * 0.32
     
     elif filing_status == "head_of_household":
-        # Head of household brackets
         if taxable_income <= 15700:
             return taxable_income * 0.10
         elif taxable_income <= 59850:
@@ -375,70 +372,11 @@ def calculate_tax_owed(taxable_income: float, filing_status: str):
     
     return 0
 
-# FIXED: Single root route
+# Routes
 @app.get("/")
 async def root():
-    return {
-        "id": document.id,
-        "filename": document.filename,
-        "file_type": document.file_type,
-        "processing_status": document.processing_status,
-        "document_type": document.document_type,
-        "extracted_data": document.extracted_data,
-        "processing_error": document.processing_error,
-        "has_processor": doc_processor is not None,
-        "debug_reprocess": debug_result
-    }
+    return {"message": "TaxBox.AI API is running"}
 
-@app.get("/filing-status/standard-deductions")
-def get_standard_deductions(tax_year: int = 2024):
-    """Get standard deduction amounts for all filing statuses"""
-    return {
-        "tax_year": tax_year,
-        "standard_deductions": {
-            "single": get_standard_deduction("single", tax_year),
-            "married_jointly": get_standard_deduction("married_jointly", tax_year),
-            "married_separately": get_standard_deduction("married_separately", tax_year),
-            "head_of_household": get_standard_deduction("head_of_household", tax_year),
-            "qualifying_widow": get_standard_deduction("qualifying_widow", tax_year)
-        }
-    }
-
-@app.get("/filing-status/options")
-def get_filing_status_options():
-    """Get available filing status options with descriptions"""
-    return {
-        "filing_statuses": [
-            {
-                "value": "single",
-                "label": "Single",
-                "description": "Check if you are unmarried or legally separated under a divorce or separate maintenance decree"
-            },
-            {
-                "value": "married_jointly",
-                "label": "Married Filing Jointly",
-                "description": "Check if you are married and you and your spouse agree to file a joint return"
-            },
-            {
-                "value": "married_separately",
-                "label": "Married Filing Separately",
-                "description": "Check if you are married but choose to file separate returns"
-            },
-            {
-                "value": "head_of_household",
-                "label": "Head of Household",
-                "description": "Check if you are unmarried and paid more than half the cost of keeping up a home for a qualifying person"
-            },
-            {
-                "value": "qualifying_widow",
-                "label": "Qualifying Widow(er)",
-                "description": "Check if your spouse died in a prior tax year and you have a qualifying child"
-            }
-        ]
-    }
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 @app.post("/register", response_model=UserResponse)
 def register(user: UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
@@ -807,7 +745,7 @@ def debug_document(
         except Exception as e:
             debug_result = {"error": str(e)}
     
-     return {
+    return {
         "id": document.id,
         "filename": document.filename,
         "file_type": document.file_type,
