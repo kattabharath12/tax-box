@@ -438,8 +438,7 @@ def get_filing_status_options():
     }
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)"message": "TaxBox.AI API is running"}
-
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 @app.post("/register", response_model=UserResponse)
 def register(user: UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
