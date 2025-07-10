@@ -3,14 +3,6 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-# Auto-run migration if needed
-if os.getenv("RUN_MIGRATION") == "true":
-    try:
-        from migrate_production import run_migration
-        run_migration()
-        print("✅ Migration completed on startup")
-    except Exception as e:
-        print(f"❌ Migration failed: {e}")
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -27,26 +19,7 @@ import jwt
 from passlib.context import CryptContext
 import uvicorn
 import shutil
-from enum import Enum
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://tax-bo-production.up.railway.app",  # Your frontend domain
-        "http://localhost:3000",  # For local development
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-@app.get("/")
-async def root():
-    return {"message": "TaxBox API is running"}
-
-# Your existing routes go here...
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./taxbox.db")
 
@@ -69,14 +42,6 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
-# Enums for Filing Status
-class FilingStatus(str, Enum):
-    SINGLE = "single"
-    MARRIED_JOINTLY = "married_jointly"
-    MARRIED_SEPARATELY = "married_separately"
-    HEAD_OF_HOUSEHOLD = "head_of_household"
-    QUALIFYING_WIDOW = "qualifying_widow"
 
 # Database Models
 class User(Base):
@@ -134,18 +99,6 @@ class TaxReturn(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     tax_year = Column(Integer)
-    
-    # Filing Status Information
-    filing_status = Column(String, default="single")
-    spouse_name = Column(String)
-    spouse_ssn = Column(String)
-    spouse_has_income = Column(Boolean, default=False)
-    spouse_itemizes = Column(Boolean, default=False)
-    qualifying_person_name = Column(String)
-    qualifying_person_relationship = Column(String)
-    lived_with_taxpayer = Column(Boolean, default=False)
-    
-    # Tax Calculation Fields
     income = Column(Float)
     deductions = Column(Float)
     withholdings = Column(Float)
@@ -190,22 +143,11 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class FilingStatusInfo(BaseModel):
-    filing_status: FilingStatus
-    spouse_name: Optional[str] = None
-    spouse_ssn: Optional[str] = None
-    spouse_has_income: Optional[bool] = False
-    spouse_itemizes: Optional[bool] = False
-    qualifying_person_name: Optional[str] = None
-    qualifying_person_relationship: Optional[str] = None
-    lived_with_taxpayer: Optional[bool] = False
-
 class TaxReturnCreate(BaseModel):
     tax_year: int
     income: float
     deductions: Optional[float] = None
     withholdings: float = 0
-    filing_status_info: Optional[FilingStatusInfo] = None
 
 class TaxReturnResponse(BaseModel):
     id: int
@@ -218,16 +160,6 @@ class TaxReturnResponse(BaseModel):
     amount_owed: float
     status: str
     created_at: datetime
-    
-    # Filing Status fields
-    filing_status: str
-    spouse_name: Optional[str] = None
-    spouse_ssn: Optional[str] = None
-    spouse_has_income: Optional[bool] = None
-    spouse_itemizes: Optional[bool] = None
-    qualifying_person_name: Optional[str] = None
-    qualifying_person_relationship: Optional[str] = None
-    lived_with_taxpayer: Optional[bool] = None
 
     class Config:
         from_attributes = True
@@ -330,63 +262,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
-
-# Tax calculation functions
-def get_standard_deduction(filing_status: str, tax_year: int = 2024):
-    """Get standard deduction based on filing status"""
-    standard_deductions = {
-        "single": 14600,
-        "married_jointly": 29200,
-        "married_separately": 14600,
-        "head_of_household": 21900,
-        "qualifying_widow": 29200
-    }
-    return standard_deductions.get(filing_status, 14600)
-
-def calculate_tax_owed(taxable_income: float, filing_status: str):
-    """Calculate tax owed based on taxable income and filing status"""
-    
-    # Tax brackets for 2024 (simplified)
-    if filing_status in ["single", "married_separately"]:
-        # Single filer brackets
-        if taxable_income <= 11000:
-            return taxable_income * 0.10
-        elif taxable_income <= 44725:
-            return 1100 + (taxable_income - 11000) * 0.12
-        elif taxable_income <= 95375:
-            return 5147 + (taxable_income - 44725) * 0.22
-        elif taxable_income <= 182050:
-            return 16290 + (taxable_income - 95375) * 0.24
-        else:
-            return 37104 + (taxable_income - 182050) * 0.32
-    
-    elif filing_status in ["married_jointly", "qualifying_widow"]:
-        # Married filing jointly brackets
-        if taxable_income <= 22000:
-            return taxable_income * 0.10
-        elif taxable_income <= 89450:
-            return 2200 + (taxable_income - 22000) * 0.12
-        elif taxable_income <= 190750:
-            return 10294 + (taxable_income - 89450) * 0.22
-        elif taxable_income <= 364200:
-            return 32580 + (taxable_income - 190750) * 0.24
-        else:
-            return 74208 + (taxable_income - 364200) * 0.32
-    
-    elif filing_status == "head_of_household":
-        # Head of household brackets
-        if taxable_income <= 15700:
-            return taxable_income * 0.10
-        elif taxable_income <= 59850:
-            return 1570 + (taxable_income - 15700) * 0.12
-        elif taxable_income <= 95350:
-            return 6868 + (taxable_income - 59850) * 0.22
-        elif taxable_income <= 182050:
-            return 14678 + (taxable_income - 95350) * 0.24
-        else:
-            return 35486 + (taxable_income - 182050) * 0.32
-    
-    return 0
 
 # Routes
 @app.get("/")
@@ -516,43 +391,177 @@ async def upload_document(
 def get_documents(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Document).filter(Document.user_id == current_user.id).all()
 
-@app.post("/tax-returns", response_model=TaxReturnResponse)
-def create_tax_return(
-    tax_return: TaxReturnCreate,
+@app.get("/documents/{document_id}/extracted-data")
+def get_extracted_data(
+    document_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Get filing status info
-    filing_info = tax_return.filing_status_info
-    filing_status = filing_info.filing_status if filing_info else FilingStatus.SINGLE
+    """Get extracted data from a processed document"""
     
-    # Validate filing status requirements
-    if filing_status in [FilingStatus.MARRIED_JOINTLY, FilingStatus.MARRIED_SEPARATELY]:
-        if not filing_info or not filing_info.spouse_name or not filing_info.spouse_ssn:
-            raise HTTPException(
-                status_code=400, 
-                detail="Spouse name and SSN are required for married filing status"
-            )
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.user_id == current_user.id
+    ).first()
     
-    if filing_status == FilingStatus.HEAD_OF_HOUSEHOLD:
-        if not filing_info or not filing_info.qualifying_person_name:
-            raise HTTPException(
-                status_code=400, 
-                detail="Qualifying person information is required for head of household"
-            )
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
     
-    # Tax calculation with filing status
+    return {
+        "document_id": document.id,
+        "filename": document.filename,
+        "document_type": document.document_type,
+        "processing_status": document.processing_status,
+        "extracted_data": document.extracted_data,
+        "processed_at": document.processed_at,
+        "processing_error": document.processing_error
+    }
+
+@app.get("/documents/{document_id}/suggestions")
+def get_document_suggestions(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get tax entry suggestions from a document"""
+    
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.user_id == current_user.id
+    ).first()
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    suggestions = db.query(DocumentSuggestion).filter(
+        DocumentSuggestion.document_id == document_id
+    ).all()
+    
+    return [
+        {
+            "id": s.id,
+            "field_name": s.field_name,
+            "suggested_value": s.suggested_value,
+            "description": s.description,
+            "confidence": s.confidence,
+            "is_accepted": s.is_accepted
+        }
+        for s in suggestions
+    ]
+
+@app.post("/documents/{document_id}/accept-suggestion/{suggestion_id}")
+def accept_suggestion(
+    document_id: int,
+    suggestion_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Accept a tax entry suggestion"""
+    
+    suggestion = db.query(DocumentSuggestion).filter(
+        DocumentSuggestion.id == suggestion_id,
+        DocumentSuggestion.document_id == document_id
+    ).first()
+    
+    if not suggestion:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    
+    # Verify document ownership
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.user_id == current_user.id
+    ).first()
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    suggestion.is_accepted = True
+    db.commit()
+    
+    return {"message": "Suggestion accepted"}
+
+@app.get("/documents/processing-status")
+def get_processing_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get processing status overview"""
+    
+    from sqlalchemy import func
+    
+    status_counts = db.query(
+        Document.processing_status,
+        func.count(Document.id).label('count')
+    ).filter(
+        Document.user_id == current_user.id
+    ).group_by(Document.processing_status).all()
+    
+    return {
+        "status_counts": {status: count for status, count in status_counts},
+        "total_documents": sum(count for _, count in status_counts)
+    }
+
+@router.post("/tax-returns/from-document/{document_id}", response_model=TaxReturnResponse)
+def create_tax_return_from_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.user_id == current_user.id
+    ).first()
+    
+    if not document or not document.extracted_data:
+        raise HTTPException(status_code=404, detail="Document data not found or not processed")
+
+    extracted = document.extracted_data
+    income = extracted.get("income", 0)
+    deductions = extracted.get("deductions", 12550)
+    withholdings = extracted.get("withholdings", 0)
+
+    taxable_income = max(0, income - deductions)
+    if taxable_income <= 10275:
+        tax_owed = taxable_income * 0.10
+    elif taxable_income <= 41775:
+        tax_owed = 1027.50 + (taxable_income - 10275) * 0.12
+    else:
+        tax_owed = 4807.50 + (taxable_income - 41775) * 0.22
+
+    refund_amount = max(0, withholdings - tax_owed)
+    amount_owed = max(0, tax_owed - withholdings)
+
+    db_tax_return = TaxReturn(
+        user_id=current_user.id,
+        tax_year=datetime.now().year,
+        income=income,
+        deductions=deductions,
+        withholdings=withholdings,
+        tax_owed=tax_owed,
+        refund_amount=refund_amount,
+        amount_owed=amount_owed,
+        status="draft"
+    )
+    db.add(db_tax_return)
+    db.commit()
+    db.refresh(db_tax_return)
+    return db_tax_return
+    # Tax calculation
     total_income = tax_return.income
-    deductions = tax_return.deductions or get_standard_deduction(filing_status, tax_return.tax_year)
+    deductions = tax_return.deductions or 12550  # Standard deduction
     taxable_income = max(0, total_income - deductions)
-    
-    # Calculate tax owed based on filing status
-    tax_owed = calculate_tax_owed(taxable_income, filing_status)
-    
+
+    # Simplified tax calculation
+    if taxable_income <= 10275:
+        tax_owed = taxable_income * 0.10
+    elif taxable_income <= 41775:
+        tax_owed = 1027.50 + (taxable_income - 10275) * 0.12
+    else:
+        tax_owed = 4807.50 + (taxable_income - 41775) * 0.22
+
     refund_amount = max(0, tax_return.withholdings - tax_owed)
     amount_owed = max(0, tax_owed - tax_return.withholdings)
 
-    # Create tax return with filing status info
     db_tax_return = TaxReturn(
         user_id=current_user.id,
         tax_year=tax_return.tax_year,
@@ -562,19 +571,8 @@ def create_tax_return(
         tax_owed=tax_owed,
         refund_amount=refund_amount,
         amount_owed=amount_owed,
-        status="draft",
-        
-        # Filing status fields
-        filing_status=filing_status,
-        spouse_name=filing_info.spouse_name if filing_info else None,
-        spouse_ssn=filing_info.spouse_ssn if filing_info else None,
-        spouse_has_income=filing_info.spouse_has_income if filing_info else False,
-        spouse_itemizes=filing_info.spouse_itemizes if filing_info else False,
-        qualifying_person_name=filing_info.qualifying_person_name if filing_info else None,
-        qualifying_person_relationship=filing_info.qualifying_person_relationship if filing_info else None,
-        lived_with_taxpayer=filing_info.lived_with_taxpayer if filing_info else False
+        status="draft"
     )
-    
     db.add(db_tax_return)
     db.commit()
     db.refresh(db_tax_return)
@@ -583,64 +581,6 @@ def create_tax_return(
 @app.get("/tax-returns")
 def get_tax_returns(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(TaxReturn).filter(TaxReturn.user_id == current_user.id).all()
-
-@app.put("/tax-returns/{tax_return_id}/filing-status")
-def update_filing_status(
-    tax_return_id: int,
-    filing_info: FilingStatusInfo,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update filing status for an existing tax return"""
-    
-    # Get the tax return
-    tax_return = db.query(TaxReturn).filter(
-        TaxReturn.id == tax_return_id,
-        TaxReturn.user_id == current_user.id
-    ).first()
-    
-    if not tax_return:
-        raise HTTPException(status_code=404, detail="Tax return not found")
-    
-    # Validate filing status requirements
-    if filing_info.filing_status in [FilingStatus.MARRIED_JOINTLY, FilingStatus.MARRIED_SEPARATELY]:
-        if not filing_info.spouse_name or not filing_info.spouse_ssn:
-            raise HTTPException(
-                status_code=400, 
-                detail="Spouse name and SSN are required for married filing status"
-            )
-    
-    if filing_info.filing_status == FilingStatus.HEAD_OF_HOUSEHOLD:
-        if not filing_info.qualifying_person_name:
-            raise HTTPException(
-                status_code=400, 
-                detail="Qualifying person information is required for head of household"
-            )
-    
-    # Update filing status fields
-    tax_return.filing_status = filing_info.filing_status
-    tax_return.spouse_name = filing_info.spouse_name
-    tax_return.spouse_ssn = filing_info.spouse_ssn
-    tax_return.spouse_has_income = filing_info.spouse_has_income
-    tax_return.spouse_itemizes = filing_info.spouse_itemizes
-    tax_return.qualifying_person_name = filing_info.qualifying_person_name
-    tax_return.qualifying_person_relationship = filing_info.qualifying_person_relationship
-    tax_return.lived_with_taxpayer = filing_info.lived_with_taxpayer
-    
-    # Recalculate tax with new filing status
-    deductions = tax_return.deductions or get_standard_deduction(filing_info.filing_status, tax_return.tax_year)
-    taxable_income = max(0, tax_return.income - deductions)
-    tax_owed = calculate_tax_owed(taxable_income, filing_info.filing_status)
-    
-    tax_return.deductions = deductions
-    tax_return.tax_owed = tax_owed
-    tax_return.refund_amount = max(0, tax_return.withholdings - tax_owed)
-    tax_return.amount_owed = max(0, tax_owed - tax_return.withholdings)
-    
-    db.commit()
-    db.refresh(tax_return)
-    
-    return tax_return
 
 @app.get("/tax-returns/{tax_return_id}/export/json")
 def export_tax_return_json(
@@ -659,6 +599,52 @@ def export_tax_return_json(
     if not tax_return:
         raise HTTPException(status_code=404, detail="Tax return not found")
     
+    from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from fastapi.responses import FileResponse
+
+@app.get("/tax-returns/{tax_return_id}/export/pdf")
+def export_tax_return_pdf(
+    tax_return_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    tax_return = db.query(TaxReturn).filter(
+        TaxReturn.id == tax_return_id,
+        TaxReturn.user_id == current_user.id
+    ).first()
+    
+    if not tax_return:
+        raise HTTPException(status_code=404, detail="Tax return not found")
+
+    file_path = f"tax_return_{tax_return.tax_year}_{current_user.id}.pdf"
+
+    c = canvas.Canvas(file_path, pagesize=letter)
+    c.setFont("Helvetica", 12)
+    y = 750
+
+    c.drawString(100, y, f"Tax Return Summary for {current_user.full_name}")
+    y -= 30
+    c.drawString(100, y, f"Email: {current_user.email}")
+    y -= 30
+    c.drawString(100, y, f"Year: {tax_return.tax_year}")
+    y -= 30
+    c.drawString(100, y, f"Income: ${tax_return.income:,.2f}")
+    y -= 30
+    c.drawString(100, y, f"Deductions: ${tax_return.deductions:,.2f}")
+    y -= 30
+    c.drawString(100, y, f"Tax Owed: ${tax_return.tax_owed:,.2f}")
+    y -= 30
+    c.drawString(100, y, f"Refund: ${tax_return.refund_amount:,.2f}")
+    y -= 30
+    c.drawString(100, y, f"Amount Owed: ${tax_return.amount_owed:,.2f}")
+    y -= 30
+    c.drawString(100, y, f"Status: {tax_return.status}")
+
+    c.save()
+
+    return FileResponse(file_path, media_type="application/pdf", filename=file_path)
+
     # Create comprehensive JSON data
     export_data = {
         "tax_summary": {
@@ -671,17 +657,7 @@ def export_tax_return_json(
         "taxpayer_info": {
             "name": current_user.full_name,
             "email": current_user.email,
-            "filing_status": tax_return.filing_status
-        },
-        "filing_status_details": {
-            "filing_status": tax_return.filing_status,
-            "spouse_name": tax_return.spouse_name,
-            "spouse_ssn": tax_return.spouse_ssn,
-            "spouse_has_income": tax_return.spouse_has_income,
-            "spouse_itemizes": tax_return.spouse_itemizes,
-            "qualifying_person_name": tax_return.qualifying_person_name,
-            "qualifying_person_relationship": tax_return.qualifying_person_relationship,
-            "lived_with_taxpayer": tax_return.lived_with_taxpayer
+            "filing_status": "Single"
         },
         "income_information": {
             "total_income": tax_return.income,
@@ -694,9 +670,9 @@ def export_tax_return_json(
         },
         "deductions": {
             "total_deductions": tax_return.deductions,
-            "deduction_type": "Standard" if tax_return.deductions <= get_standard_deduction(tax_return.filing_status, tax_return.tax_year) else "Itemized",
-            "standard_deduction": get_standard_deduction(tax_return.filing_status, tax_return.tax_year),
-            "itemized_deductions": max(0, tax_return.deductions - get_standard_deduction(tax_return.filing_status, tax_return.tax_year))
+            "deduction_type": "Standard" if tax_return.deductions <= 12550 else "Itemized",
+            "standard_deduction": 12550,
+            "itemized_deductions": max(0, tax_return.deductions - 12550)
         },
         "tax_calculation": {
             "taxable_income": max(0, tax_return.income - tax_return.deductions),
@@ -737,88 +713,6 @@ def create_payment(
     db.commit()
     db.refresh(db_payment)
     return db_payment
-
-@app.get("/debug/document/{document_id}")
-def debug_document(
-    document_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Debug endpoint to see document processing details"""
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
-    
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Try processing again for debugging
-    debug_result = None
-    if doc_processor and document.file_path:
-        try:
-            debug_result = doc_processor.process_document(document.file_path, document.file_type)
-        except Exception as e:
-            debug_result = {"error": str(e)}
-    
-    return {
-        "id": document.id,
-        "filename": document.filename,
-        "file_type": document.file_type,
-        "processing_status": document.processing_status,
-        "document_type": document.document_type,
-        "extracted_data": document.extracted_data,
-        "processing_error": document.processing_error,
-        "has_processor": doc_processor is not None,
-        "debug_reprocess": debug_result
-    }
-
-@app.get("/filing-status/standard-deductions")
-def get_standard_deductions(tax_year: int = 2024):
-    """Get standard deduction amounts for all filing statuses"""
-    return {
-        "tax_year": tax_year,
-        "standard_deductions": {
-            "single": get_standard_deduction("single", tax_year),
-            "married_jointly": get_standard_deduction("married_jointly", tax_year),
-            "married_separately": get_standard_deduction("married_separately", tax_year),
-            "head_of_household": get_standard_deduction("head_of_household", tax_year),
-            "qualifying_widow": get_standard_deduction("qualifying_widow", tax_year)
-        }
-    }
-
-@app.get("/filing-status/options")
-def get_filing_status_options():
-    """Get available filing status options with descriptions"""
-    return {
-        "filing_statuses": [
-            {
-                "value": "single",
-                "label": "Single",
-                "description": "Check if you are unmarried or legally separated under a divorce or separate maintenance decree"
-            },
-            {
-                "value": "married_jointly",
-                "label": "Married Filing Jointly",
-                "description": "Check if you are married and you and your spouse agree to file a joint return"
-            },
-            {
-                "value": "married_separately",
-                "label": "Married Filing Separately",
-                "description": "Check if you are married but choose to file separate returns"
-            },
-            {
-                "value": "head_of_household",
-                "label": "Head of Household",
-                "description": "Check if you are unmarried and paid more than half the cost of keeping up a home for a qualifying person"
-            },
-            {
-                "value": "qualifying_widow",
-                "label": "Qualifying Widow(er)",
-                "description": "Check if your spouse died in a prior tax year and you have a qualifying child"
-            }
-        ]
-    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
