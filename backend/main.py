@@ -236,19 +236,19 @@ Base.metadata.create_all(bind=engine)
 # FastAPI App
 app = FastAPI(title="TaxBox.AI API", version="1.0.0")
 
-# FIXED: Proper CORS middleware with correct frontend URL
+# FIXED: Better CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://tax-bo-production.up.railway.app",  # Your frontend URL
         "http://localhost:3000",  # Local development
-        "*"  # Allow all for now - you can restrict this later
+        "http://localhost:3001",  # Alternative local port
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
-
 # Security
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
